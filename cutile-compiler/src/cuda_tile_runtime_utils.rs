@@ -2025,3 +2025,38 @@ printf 'fake cubin\n' > "$out"
         fs::set_permissions(path, permissions).unwrap();
     }
 }
+
+/// Environment variable naming a directory that receives a copy of every
+/// bytecode image `tileiras` compiled successfully and the cubin it produced,
+/// as `<gpu_name>_<fnv1a of the bytecode>.bc` / `.cubin`. Off when unset. The
+/// temporaries themselves are still removed. This is how a kernel's SASS is
+/// inspected (`cuobjdump -sass <file>.cubin`) or re-assembled by hand with
+/// different `tileiras` flags; the on-disk JIT cache stores a header-wrapped
+/// image that `cuobjdump` does not read.
+pub const KEEP_ARTIFACTS_ENV: &str = "CUTILE_KEEP_ARTIFACTS";
+
+fn keep_artifacts(bytecode: &[u8], cubin: &[u8], gpu_name: &str) {
+    let Ok(dir) = env::var(KEEP_ARTIFACTS_ENV) else {
+        return;
+    };
+    if dir.is_empty() {
+        return;
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytecode {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let dir = std::path::PathBuf::from(dir);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("{KEEP_ARTIFACTS_ENV}: cannot create {}: {e}", dir.display());
+        return;
+    }
+    let stem = format!("{gpu_name}_{hash:016x}");
+    for (ext, bytes) in [("bc", bytecode), ("cubin", cubin)] {
+        let path = dir.join(format!("{stem}.{ext}"));
+        if let Err(e) = std::fs::write(&path, bytes) {
+            eprintln!("{KEEP_ARTIFACTS_ENV}: cannot write {}: {e}", path.display());
+        }
+    }
+}
