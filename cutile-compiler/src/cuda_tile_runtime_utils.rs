@@ -974,6 +974,7 @@ pub fn run_tileiras(
             tileiras.display(),
         )));
     }
+    keep_artifacts(bytecode, &cubin, gpu_name);
     crate::jit_cache::record_backend_compile();
     Ok(cubin)
 }
