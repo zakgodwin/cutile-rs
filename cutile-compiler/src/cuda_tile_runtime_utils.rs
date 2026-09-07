@@ -17,6 +17,40 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use uuid::Uuid;
 
+/// Pin a `tileiras` child process to the toolkit its binary lives in.
+///
+/// `tileiras` delegates PTX assembly to `ptxas` and code generation to NVVM
+/// from the toolkit named by `CUDA_PATH` (the Windows installer's variable)
+/// before falling back to its own install directory. With several toolkits
+/// installed `CUDA_PATH` routinely names an older one, and `tileiras` then
+/// fails with a bare "failed to compile Tile IR program" (exit code 5) for
+/// every kernel whose PTX needs the newer assembler — trivial kernels still
+/// assemble, which makes the symptom look like a kernel bug. Observed with
+/// `CUDA_PATH=...\CUDA\v13.1` and the 13.3 `tileiras` on Windows: NVIDIA's own
+/// `gemm` example failed, `hello_world` passed. Setting `CUDA_PATH` to the
+/// resolved binary's toolkit root (`<root>/bin/tileiras`), and putting that
+/// `bin` first on the child's `PATH`, fixes it without touching the caller's
+/// environment. A binary outside a toolkit layout (a bare `CUTILE_TILEIRAS_PATH`
+/// or a `PATH` lookup) is left alone.
+fn pin_toolkit_env(cmd: &mut Command, tileiras: &Path) {
+    let Some(root) = tileiras.parent().and_then(Path::parent) else {
+        return;
+    };
+    let looks_like_toolkit =
+        root.join("nvvm").is_dir() || root.join("include").join("cuda.h").is_file();
+    if !looks_like_toolkit {
+        return;
+    }
+    cmd.env("CUDA_PATH", root);
+    let mut paths = vec![root.join("bin")];
+    if let Some(existing) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing));
+    }
+    if let Ok(joined) = env::join_paths(paths) {
+        cmd.env("PATH", joined);
+    }
+}
+
 /// The minimum CUDA toolkit the Tile compiler supports; `tileiras` ships
 /// with CUDA 13.2. The shared host-side crates support 13.0+ and enforce
 /// their own floor in `cuda-bindings`.
@@ -648,7 +682,10 @@ fn probe_max_supported_bytecode_version(tileiras: &Path) -> Result<BytecodeVersi
             ))
         })?;
         let args = ["--gpu-name", "sm_120", "-o", &cubin_filename, &bc_filename];
-        let output = Command::new(tileiras).args(args).output().map_err(|e| {
+        let mut cmd = Command::new(tileiras);
+        cmd.args(args);
+        pin_toolkit_env(&mut cmd, tileiras);
+        let output = cmd.output().map_err(|e| {
             JITError::Generic(tileiras_launch_error(tileiras, &args, &bc_filename, e))
         })?;
         if output.status.success() {
@@ -892,7 +929,10 @@ pub fn run_tileiras(
         args.push("--sanitize=memcheck");
     }
     args.extend(["-o", &cubin_filename, &bc_filename]);
-    let output = match Command::new(&tileiras).args(&args).output() {
+    let mut cmd = Command::new(&tileiras);
+    cmd.args(&args);
+    pin_toolkit_env(&mut cmd, &tileiras);
+    let output = match cmd.output() {
         Ok(output) => output,
         Err(e) => {
             // The message names the bytecode, so it has to outlive this call.
