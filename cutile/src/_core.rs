@@ -1924,6 +1924,18 @@ pub mod core {
         unreachable!()
     }
 
+    /// Bitwise XOR along `dim` (integer element types; identity 0). Collapses
+    /// that axis like `reduce_sum`, so a hashing or parity fold over a tile
+    /// dimension lowers to one `cuda_tile.reduce` instead of an extract tree.
+    #[cuda_tile::compiler_op(name = "reduce")]
+    #[cuda_tile::variadic_op(N = 6, M = 6)]
+    pub fn reduce_xor<E: ElementType, const S: [i32; N], const R: [i32; M]>(
+        x: Tile<E, S>,
+        dim: i32,
+    ) -> Tile<E, R> {
+        unreachable!()
+    }
+
     /// Prefix sum along `dim`. The compiler emits the addf/addi region.
     #[cuda_tile::op(name="cuda_tile.scan", params=["operand"])]
     #[cuda_tile::variadic_op(N = 6)]

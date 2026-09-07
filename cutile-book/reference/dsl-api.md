@@ -588,6 +588,7 @@ let n_cols: i32 = matrix.shape()[1];
 | `reduce_max(tile, dim)` | `(Tile<E, S>, i32) -> Tile<E, R>` | Max reduction |
 | `reduce_min(tile, dim)` | `(Tile<E, S>, i32) -> Tile<E, R>` | Min reduction |
 | `reduce_prod(tile, dim)` | `(Tile<E, S>, i32) -> Tile<E, R>` | Product reduction |
+| `reduce_xor(tile, dim)` | `(Tile<E, S>, i32) -> Tile<E, R>` | Bitwise XOR reduction (integer element types) |
 | `reduce(tile, dim, identity, f)` | `(Tile<E, S>, i32, E, Fn(E, E) -> E) -> Tile<E, S>` | Custom reduction; typed with the input shape (only `reduce_min/max/sum/prod` collapse the axis in their return type) |
 | `scan_sum(tile, dim, reverse, identity)` | `(Tile<E, S>, i32, reverse::Mode, E) -> Tile<E, S>` | Prefix sum |
 | `scan(tile, dim, reverse, identity, f)` | `(Tile<E, S>, i32, reverse::Mode, E, Fn(E, E) -> E) -> Tile<E, S>` | Custom prefix scan |

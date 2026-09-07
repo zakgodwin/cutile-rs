@@ -1689,6 +1689,10 @@ impl<'m> CUDATileFunctionCompiler<'m> {
                             get_const_hex(&element_type, "one")?,
                             syn::parse_quote! { { curr * prev } },
                         ),
+                        "reduce_xor" => (
+                            get_const_hex(&element_type, "zero")?,
+                            syn::parse_quote! { { curr ^ prev } },
+                        ),
                         _ => {
                             return self.jit_error_result(
                                 &call_expr.span(),
