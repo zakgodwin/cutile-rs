@@ -466,13 +466,16 @@ impl CudaContext {
         let flags = cuda_bindings::CUstream_flags_enum_CU_STREAM_NON_BLOCKING;
         let mut cu_stream = MaybeUninit::uninit();
         let cu_stream = unsafe {
+            // `as _`: bindgen types the driver's enums as `c_int` under MSVC
+            // (`c_uint` under GCC/Clang), while the `unsigned int Flags`
+            // parameters are `c_uint` everywhere. Same idiom as cudarc_shim.
             match priority {
                 Some(priority) => cuda_bindings::cuStreamCreateWithPriority(
                     cu_stream.as_mut_ptr(),
-                    flags,
+                    flags as _,
                     priority,
                 ),
-                None => cuda_bindings::cuStreamCreate(cu_stream.as_mut_ptr(), flags),
+                None => cuda_bindings::cuStreamCreate(cu_stream.as_mut_ptr(), flags as _),
             }
             .result()?;
             cu_stream.assume_init()
@@ -719,10 +722,12 @@ impl CudaContext {
                 active.as_mut_ptr(),
             )
             .result()?;
-            let current = current.assume_init();
-            let new_flags =
-                (current & !cuda_bindings::CUctx_flags_enum_CU_CTX_SCHED_MASK) | policy.to_raw();
-            cuda_bindings::cuDevicePrimaryCtxSetFlags_v2(self.cu_device, new_flags).result()
+            // `current` is the driver's `unsigned int`; the enum constants are
+            // `c_int` under MSVC, so widen them to the flags word explicitly.
+            let current: u32 = current.assume_init();
+            let new_flags = (current & !(cuda_bindings::CUctx_flags_enum_CU_CTX_SCHED_MASK as u32))
+                | (policy.to_raw() as u32);
+            cuda_bindings::cuDevicePrimaryCtxSetFlags_v2(self.cu_device, new_flags as _).result()
         }
     }
 
@@ -742,7 +747,7 @@ impl CudaContext {
                 active.as_mut_ptr(),
             )
             .result()?;
-            Ok(SyncPolicy::from_raw(flags.assume_init()))
+            Ok(SyncPolicy::from_raw(flags.assume_init() as _))
         }
     }
 
@@ -755,7 +760,8 @@ impl CudaContext {
         if error_state == 0 {
             Ok(())
         } else {
-            Err(DriverError(error_state))
+            // `CUresult` is a `c_int` enum under MSVC; the sticky state is a u32.
+            Err(DriverError(error_state as _))
         }
     }
 
@@ -767,7 +773,7 @@ impl CudaContext {
     /// calls will surface it. A later store overwrites an earlier one.
     pub fn record_err<T>(&self, result: Result<T, DriverError>) {
         if let Err(err) = result {
-            self.error_state.store(err.0, Ordering::Relaxed)
+            self.error_state.store(err.0 as _, Ordering::Relaxed)
         }
     }
 }

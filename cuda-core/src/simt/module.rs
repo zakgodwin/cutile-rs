@@ -649,7 +649,7 @@ impl CudaFunction {
         unsafe {
             let base = &mut cluster_attribute as *mut _ as *mut u8;
             (base as *mut u32).write(
-                cuda_bindings::CUlaunchAttributeID_enum_CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION,
+                cuda_bindings::CUlaunchAttributeID_enum_CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION as _,
             );
             let dimensions = base.add(8) as *mut u32;
             dimensions.write(cluster_dim.0);
