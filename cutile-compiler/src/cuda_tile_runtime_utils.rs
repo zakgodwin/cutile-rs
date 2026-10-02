@@ -239,7 +239,8 @@ fn resolve_tileiras_binary_with_candidates(
 /// 2. `$CUDA_TOOLKIT_PATH/bin/tileiras`, then `$CUDA_HOME/bin/tileiras`,
 ///    when the variable is set and the binary exists there (the same two
 ///    variables, in the same order, that the workspace build scripts honor).
-/// 3. Default CUDA install locations with CUDA 13.2+ and `bin/tileiras`.
+/// 3. The toolkit this binary was built against, then the default CUDA install locations
+///    (newest first), each only with CUDA 13.2+ and `bin/tileiras`.
 /// 4. `tileiras` through normal `PATH` lookup.
 pub fn tileiras_binary() -> PathBuf {
     tileiras_and_toolkit().0
@@ -1159,24 +1160,44 @@ fn tileiras_launch_error(
     message
 }
 
+/// Default toolkit roots: the one this binary was BUILT against first (resolved by the
+/// `cuda-bindings` build script from `CUDA_TOOLKIT_PATH` / `CUDA_HOME` / its defaults), then the
+/// standard install locations, newest first. A binary started with no CUDA environment then JITs
+/// with the `tileiras` of the SDK it was compiled for, the same one its tests (run under the build
+/// environment) used - not whichever older toolkit headed a fixed list.
 fn default_cuda_toolkit_candidates() -> &'static [PathBuf] {
     static CANDIDATES: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
     CANDIDATES.get_or_init(|| {
         #[cfg(windows)]
-        let candidates = [
+        let installed = [
+            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3",
             r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2",
         ];
         #[cfg(not(windows))]
-        let candidates = [
+        let installed = [
+            "/usr/local/cuda-13.4",
             "/usr/local/cuda-13.3",
             "/usr/local/cuda-13.2",
             "/usr/local/cuda-13",
             "/usr/local/cuda",
         ];
-
-        candidates.into_iter().map(PathBuf::from).collect()
+        candidates_with_build_toolkit_first(&cuda_core::sys::cuda_toolkit_dir(), &installed)
     })
+}
+
+/// `build_toolkit` (when non-empty), then each of `installed` that is not the same directory.
+fn candidates_with_build_toolkit_first(build_toolkit: &str, installed: &[&str]) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::with_capacity(installed.len() + 1);
+    if !build_toolkit.is_empty() {
+        candidates.push(PathBuf::from(build_toolkit));
+    }
+    for dir in installed.iter().map(PathBuf::from) {
+        if !candidates.contains(&dir) {
+            candidates.push(dir);
+        }
+    }
+    candidates
 }
 
 fn default_cuda_toolkit_tileiras(candidates: &[PathBuf]) -> Option<PathBuf> {
@@ -1518,10 +1539,30 @@ mod tests {
     }
 
     #[test]
+    fn the_build_toolkit_heads_the_default_candidates_once() {
+        let installed = ["/opt/cuda-13.4", "/opt/cuda-13.3"];
+        assert_eq!(
+            candidates_with_build_toolkit_first("/opt/cuda-13.3", &installed),
+            vec![PathBuf::from("/opt/cuda-13.3"), PathBuf::from("/opt/cuda-13.4")],
+            "the build toolkit leads and is not listed twice"
+        );
+        assert_eq!(
+            candidates_with_build_toolkit_first("", &installed),
+            vec![PathBuf::from("/opt/cuda-13.4"), PathBuf::from("/opt/cuda-13.3")],
+            "no build toolkit: the installed list as given"
+        );
+        // The real list starts with the toolkit this crate was built against.
+        assert_eq!(
+            default_cuda_toolkit_candidates().first(),
+            Some(&PathBuf::from(cuda_core::sys::cuda_toolkit_dir()))
+        );
+    }
+
+    #[test]
     fn tileiras_binary_defaults_to_path_lookup() {
         assert_eq!(
             resolve_tileiras_binary_with_candidates(None, None, &[]),
-            PathBuf::from("tileiras")
+            PathBuf::from(tileiras_executable_name())
         );
     }
 
@@ -1541,7 +1582,7 @@ mod tests {
     fn tileiras_binary_treats_empty_override_as_default() {
         assert_eq!(
             resolve_tileiras_binary_with_candidates(Some(OsString::new()), None, &[]),
-            PathBuf::from("tileiras")
+            PathBuf::from(tileiras_executable_name())
         );
     }
 
