@@ -222,23 +222,10 @@ fn build_include_candidates(toolkit: &Path) -> Vec<PathBuf> {
 
 fn default_cuda_toolkit_candidates() -> &'static [PathBuf] {
     static CANDIDATES: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
-    CANDIDATES.get_or_init(|| {
-        #[cfg(windows)]
-        let candidates = [
-            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3",
-            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2",
-        ];
-        #[cfg(not(windows))]
-        let candidates = [
-            "/usr/local/cuda-13.3",
-            "/usr/local/cuda-13.2",
-            "/usr/local/cuda-13",
-            "/usr/local/cuda",
-        ];
-
-        candidates.into_iter().map(PathBuf::from).collect()
-    })
+    CANDIDATES.get_or_init(installed_cuda_toolkits)
 }
+
+include!("toolkit_installs.rs");
 
 /// Validates a toolkit root: probes the standard `include/` and the
 /// `targets/<dir>/include/` layouts for `cuda.h` (only the directories
