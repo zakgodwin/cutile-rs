@@ -30,24 +30,12 @@ const TOOLKIT_ENV_VARS: &[&str] = &["CUDA_TOOLKIT_PATH", "CUDA_HOME"];
 /// like nvcc's `-target-dir`; matches `cuda-bindings`.
 const TOOLKIT_TARGET_DIR_ENV: &str = "CUDA_TOOLKIT_TARGET_DIR";
 
-/// The default toolkit roots and version floor, matching
-/// `cuda-bindings/build.rs` (`default_cuda_toolkit_candidates`,
-/// `MIN_CUDA_VERSION`): a versioned-only install (no `/usr/local/cuda`
-/// symlink), or a symlink pointing at a below-floor tree, must resolve to
-/// the same toolkit here as it does there, or this probe reads a different
-/// `cuda.h` than the one the bindings were generated from.
-#[cfg(windows)]
-const DEFAULT_TOOLKIT_DIRS: &[&str] = &[
-    r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3",
-    r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2",
-];
-#[cfg(not(windows))]
-const DEFAULT_TOOLKIT_DIRS: &[&str] = &[
-    "/usr/local/cuda-13.3",
-    "/usr/local/cuda-13.2",
-    "/usr/local/cuda-13",
-    "/usr/local/cuda",
-];
+/// The version floor, matching `cuda-bindings/build.rs` (`MIN_CUDA_VERSION`).
+/// Candidates come from [`installed_cuda_toolkits`], a copy of
+/// `cuda-bindings/toolkit_installs.rs`: a versioned-only install (no
+/// `/usr/local/cuda` symlink), or a symlink pointing at a below-floor tree,
+/// must resolve to the same toolkit here as it does there, or this probe reads
+/// a different `cuda.h` than the one the bindings were generated from.
 const MIN_CUDA_VERSION: u32 = 13000;
 
 fn main() {
@@ -138,8 +126,46 @@ fn find_cuda_header() -> Option<PathBuf> {
             return find_cuda_header_in(Path::new(&toolkit));
         }
     }
-    DEFAULT_TOOLKIT_DIRS.iter().find_map(|toolkit| {
-        let header = find_cuda_header_in(Path::new(toolkit))?;
+    installed_cuda_toolkits().iter().find_map(|toolkit| {
+        let header = find_cuda_header_in(toolkit)?;
         (cuda_version_from_header(&header)? >= MIN_CUDA_VERSION).then_some(header)
     })
+}
+
+// Kept in lockstep BY HAND with `cuda-bindings/toolkit_installs.rs`.
+/// Every versioned CUDA toolkit installed in the platform's standard location
+/// (`CUDA\vX.Y` under Program Files on Windows, `/usr/local/cuda-X.Y`
+/// elsewhere), newest version first, then the unversioned Linux links
+/// (`/usr/local/cuda-13`, `/usr/local/cuda`). Callers apply their own
+/// version floor. Scanning, rather than naming versions, keeps a newly
+/// installed toolkit from being skipped in favour of whichever older one a
+/// fixed list happened to name.
+fn installed_cuda_toolkits() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let mut toolkits = versioned_cuda_toolkits_in(
+        Path::new(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"),
+        "v",
+    );
+    #[cfg(not(windows))]
+    let mut toolkits = versioned_cuda_toolkits_in(Path::new("/usr/local"), "cuda-");
+    #[cfg(not(windows))]
+    toolkits.extend(["/usr/local/cuda-13", "/usr/local/cuda"].map(PathBuf::from));
+    toolkits
+}
+
+/// The entries of `parent` named `{prefix}{major}.{minor}`, newest version
+/// first, compared as numbers (13.10 is newer than 13.4).
+fn versioned_cuda_toolkits_in(parent: &Path, prefix: &str) -> Vec<PathBuf> {
+    let mut versioned: Vec<((u32, u32), PathBuf)> = std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let (major, minor) = name.strip_prefix(prefix)?.split_once('.')?;
+            Some(((major.parse().ok()?, minor.parse().ok()?), entry.path()))
+        })
+        .collect();
+    versioned.sort_by(|a, b| b.0.cmp(&a.0));
+    versioned.into_iter().map(|(_, path)| path).collect()
 }

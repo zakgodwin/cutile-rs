@@ -1168,33 +1168,58 @@ fn tileiras_launch_error(
 fn default_cuda_toolkit_candidates() -> &'static [PathBuf] {
     static CANDIDATES: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
     CANDIDATES.get_or_init(|| {
-        #[cfg(windows)]
-        let installed = [
-            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4",
-            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3",
-            r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2",
-        ];
-        #[cfg(not(windows))]
-        let installed = [
-            "/usr/local/cuda-13.4",
-            "/usr/local/cuda-13.3",
-            "/usr/local/cuda-13.2",
-            "/usr/local/cuda-13",
-            "/usr/local/cuda",
-        ];
+        let installed = installed_cuda_toolkits();
         candidates_with_build_toolkit_first(&cuda_core::sys::cuda_toolkit_dir(), &installed)
     })
 }
 
+// Kept in lockstep BY HAND with `cuda-bindings/toolkit_installs.rs`.
+/// Every versioned CUDA toolkit installed in the platform's standard location
+/// (`CUDA\vX.Y` under Program Files on Windows, `/usr/local/cuda-X.Y`
+/// elsewhere), newest version first, then the unversioned Linux links
+/// (`/usr/local/cuda-13`, `/usr/local/cuda`). Callers apply their own
+/// version floor. Scanning, rather than naming versions, keeps a newly
+/// installed toolkit from being skipped in favour of whichever older one a
+/// fixed list happened to name.
+fn installed_cuda_toolkits() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let mut toolkits = versioned_cuda_toolkits_in(
+        Path::new(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"),
+        "v",
+    );
+    #[cfg(not(windows))]
+    let mut toolkits = versioned_cuda_toolkits_in(Path::new("/usr/local"), "cuda-");
+    #[cfg(not(windows))]
+    toolkits.extend(["/usr/local/cuda-13", "/usr/local/cuda"].map(PathBuf::from));
+    toolkits
+}
+
+/// The entries of `parent` named `{prefix}{major}.{minor}`, newest version
+/// first, compared as numbers (13.10 is newer than 13.4).
+fn versioned_cuda_toolkits_in(parent: &Path, prefix: &str) -> Vec<PathBuf> {
+    let mut versioned: Vec<((u32, u32), PathBuf)> = std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let (major, minor) = name.strip_prefix(prefix)?.split_once('.')?;
+            Some(((major.parse().ok()?, minor.parse().ok()?), entry.path()))
+        })
+        .collect();
+    versioned.sort_by(|a, b| b.0.cmp(&a.0));
+    versioned.into_iter().map(|(_, path)| path).collect()
+}
+
 /// `build_toolkit` (when non-empty), then each of `installed` that is not the same directory.
-fn candidates_with_build_toolkit_first(build_toolkit: &str, installed: &[&str]) -> Vec<PathBuf> {
+fn candidates_with_build_toolkit_first(build_toolkit: &str, installed: &[PathBuf]) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::with_capacity(installed.len() + 1);
     if !build_toolkit.is_empty() {
         candidates.push(PathBuf::from(build_toolkit));
     }
-    for dir in installed.iter().map(PathBuf::from) {
-        if !candidates.contains(&dir) {
-            candidates.push(dir);
+    for dir in installed {
+        if !candidates.contains(dir) {
+            candidates.push(dir.clone());
         }
     }
     candidates
@@ -1539,16 +1564,44 @@ mod tests {
     }
 
     #[test]
+    fn installed_toolkits_are_ordered_newest_version_first() {
+        let root = std::env::temp_dir().join(format!("cutile-toolkits-{}", std::process::id()));
+        for name in [
+            "cuda-12.9",
+            "cuda-13.4",
+            "cuda-13.10",
+            "cuda-13",
+            "cuda-13.x",
+            "other-13.9",
+        ] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        assert_eq!(
+            versioned_cuda_toolkits_in(&root, "cuda-"),
+            ["cuda-13.10", "cuda-13.4", "cuda-12.9"].map(|n| root.join(n)),
+            "numeric order, unversioned and foreign names skipped"
+        );
+        assert!(versioned_cuda_toolkits_in(&root.join("nowhere"), "cuda-").is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn the_build_toolkit_heads_the_default_candidates_once() {
-        let installed = ["/opt/cuda-13.4", "/opt/cuda-13.3"];
+        let installed = ["/opt/cuda-13.4", "/opt/cuda-13.3"].map(PathBuf::from);
         assert_eq!(
             candidates_with_build_toolkit_first("/opt/cuda-13.3", &installed),
-            vec![PathBuf::from("/opt/cuda-13.3"), PathBuf::from("/opt/cuda-13.4")],
+            vec![
+                PathBuf::from("/opt/cuda-13.3"),
+                PathBuf::from("/opt/cuda-13.4")
+            ],
             "the build toolkit leads and is not listed twice"
         );
         assert_eq!(
             candidates_with_build_toolkit_first("", &installed),
-            vec![PathBuf::from("/opt/cuda-13.4"), PathBuf::from("/opt/cuda-13.3")],
+            vec![
+                PathBuf::from("/opt/cuda-13.4"),
+                PathBuf::from("/opt/cuda-13.3")
+            ],
             "no build toolkit: the installed list as given"
         );
         // The real list starts with the toolkit this crate was built against.
